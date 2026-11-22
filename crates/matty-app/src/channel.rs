@@ -671,6 +671,9 @@ pub struct ChannelModel {
     pub offline: bool,
     /// Archived (#965): it reads, and the composer gives way to a note.
     pub archived: bool,
+    /// A direct message with a deactivated person (#993): it reads, and
+    /// the composer gives way to a note, as when archived.
+    pub deactivated: bool,
 }
 
 /// When a channel notifies, per surface; `Default` follows the account
@@ -723,6 +726,8 @@ pub struct ChannelNotifications {
     pub ignore_channel_mentions: bool,
     /// Only mentions make the channel bold in the sidebar.
     pub mark_unread_mentions_only: bool,
+    /// Follow every new thread in the channel (#995).
+    pub auto_follow_threads: bool,
 }
 
 /// A row in the transcript: posts interleaved with dividers.
@@ -4243,9 +4248,13 @@ impl ChannelView {
             .items_center()
             .gap(theme.space(3.))
             .child(
-                lucide(LucideIcon::Archive)
-                    .size(scaled(&theme, metrics::ICON))
-                    .text_color(theme.colors.muted_foreground),
+                lucide(if channel.archived {
+                    LucideIcon::Archive
+                } else {
+                    LucideIcon::UserX
+                })
+                .size(scaled(&theme, metrics::ICON))
+                .text_color(theme.colors.muted_foreground),
             )
             .child(
                 div()
@@ -4253,9 +4262,13 @@ impl ChannelView {
                     .min_w_0()
                     .type_style(style::UI, &theme)
                     .text_color(theme.colors.foreground)
-                    .child(t!("chan-archived-note")),
+                    .child(if channel.archived {
+                        t!("chan-archived-note")
+                    } else {
+                        t!("chan-deactivated-note")
+                    }),
             )
-            .when(channel.rights.unarchive, |note| {
+            .when(channel.archived && channel.rights.unarchive, |note| {
                 note.child(
                     Button::new("channel.unarchive")
                         .variant(ButtonVariant::Outline)
@@ -4660,9 +4673,21 @@ impl ChannelView {
         cx: &mut Context<Self>,
     ) -> Option<gpui_kit::AnyElement> {
         if post.webhook.is_some() {
-            return None;
+            return Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(UiTheme::read(cx).space(1.5))
+                    .child(post.author.clone())
+                    .child(crate::profile::author_tag(
+                        crate::profile::AuthorTag::Bot,
+                        cx,
+                    ))
+                    .into_any_element(),
+            );
         }
         let profile = profile.cloned()?;
+        let tag = profile.tag;
         let name = post.author.clone();
         let colorize = message_density(cx) == MessageDensity::Compact
             && SettingsStore::global(cx).read(cx).get().colorize_names;
@@ -4672,9 +4697,17 @@ impl ChannelView {
                 trigger.text_color(name_color(&post.author_id, dark))
             })
             .child(name.clone());
-        Some(Self::profile_popover(
-            id, "author", name, trigger, profile, card, cx,
-        ))
+        let popover = Self::profile_popover(id, "author", name, trigger, profile, card, cx);
+        Some(match tag {
+            Some(tag) => div()
+                .flex()
+                .items_center()
+                .gap(UiTheme::read(cx).space(1.5))
+                .child(popover)
+                .child(crate::profile::author_tag(tag, cx))
+                .into_any_element(),
+            None => popover,
+        })
     }
 
     /// `trigger` wrapped in the author's profile card: resting on it opens
@@ -5827,7 +5860,7 @@ impl Render for ChannelView {
             })
             .child(div().flex_1().min_h_0().child(body))
             .map(|view| {
-                if channel.archived {
+                if channel.archived || channel.deactivated {
                     view.child(Self::archived_note(&channel, cx))
                 } else {
                     view.child(centered_row(
@@ -6445,6 +6478,7 @@ mod tests {
             presence: crate::sidebar::Presence::Offline,
             status: None,
             time_zone: None,
+            tag: None,
         };
         let shown = |format, query: &str| {
             people_suggestions(std::iter::once(&profile(format)), query, 8)
@@ -6600,12 +6634,14 @@ mod tests {
             presence: crate::sidebar::Presence::Offline,
             status: None,
             time_zone: None,
+            tag: None,
         };
         let model = ChannelModel {
             purpose: None,
             person: None,
             offline: false,
             archived: false,
+            deactivated: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             profiles: vec![person("grace")],
@@ -6680,6 +6716,7 @@ mod tests {
             person: None,
             offline: true,
             archived: false,
+            deactivated: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             profiles: vec![],
@@ -6793,6 +6830,7 @@ mod tests {
             person: None,
             offline: false,
             archived: false,
+            deactivated: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             profiles: vec![],
@@ -6877,6 +6915,7 @@ mod tests {
         let channel = ChannelModel {
             offline: false,
             archived: false,
+            deactivated: false,
             purpose: None,
             person: None,
             loading: false,
@@ -6937,6 +6976,7 @@ mod tests {
             person: None,
             offline: false,
             archived: false,
+            deactivated: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             rights: crate::channel::ChannelRights {
@@ -7046,6 +7086,7 @@ mod tests {
             person: None,
             offline: false,
             archived: false,
+            deactivated: false,
             loading: false,
             max_post_size: DEFAULT_MAX_POST_SIZE,
             profiles: vec![],
@@ -7106,6 +7147,7 @@ mod tests {
         let mut channel = ChannelModel {
             offline: false,
             archived: false,
+            deactivated: false,
             purpose: None,
             person: None,
             loading: false,
