@@ -84,6 +84,9 @@ pub struct Live {
     /// How many direct and group messages the sidebar shows (#619), from
     /// the user's `sidebar_settings/limit_visible_dms_gms`.
     dm_limit: usize,
+    /// Whether joins and leaves show (#967), from the user's
+    /// `advanced_settings/join_leave`.
+    join_leave: bool,
     /// How people's names read (#156), from settings.
     names: crate::settings::NameFormat,
     /// Not connected: an open channel with no posts may just not be saved
@@ -242,6 +245,9 @@ pub struct Update {
     /// A team the user just joined, now in the team list: the window
     /// switches to it.
     pub team_joined: Option<SharedString>,
+    /// Invite people's answer (#962): the team, its invite link when the
+    /// user may invite, and the server's people not on it.
+    pub team_invitees: Option<(SharedString, Option<SharedString>, Vec<UserProfile>)>,
     /// Something the server or an App refused, for a toast (#226).
     pub refused: Option<SharedString>,
     /// A link an App answered with, for Matty's link routing (#226).
@@ -752,6 +758,7 @@ impl Live {
                 threads_on: None,
                 link_previews: true,
                 dm_limit: DM_LIMIT,
+                join_leave: true,
                 names: crate::settings::NameFormat::default(),
                 offline: crate::offline(),
                 zone: crate::clock::zone(),
@@ -988,6 +995,7 @@ impl Live {
             link_previews: false,
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
+            join_leave: self.join_leave,
         };
         let model =
             crate::transcript::channel_model(&row, Some(posts), &self.users, &viewer, None, &[]);
@@ -1005,6 +1013,7 @@ impl Live {
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
+            join_leave: self.join_leave,
         };
         let with_ephemeral = crate::interactive::with_ephemeral(
             self.posts.as_deref(),
@@ -1687,6 +1696,7 @@ impl Live {
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
+            join_leave: self.join_leave,
         };
         let listed: Vec<_> = posts
             .iter()
@@ -1875,6 +1885,7 @@ impl Live {
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
+            join_leave: self.join_leave,
         };
         let rows = threads
             .iter()
@@ -1914,6 +1925,7 @@ impl Live {
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
+            join_leave: self.join_leave,
         };
         let shown = |post| crate::transcript::listed_post(post, &self.users, &viewer);
         let mut model = crate::right_pane::ThreadModel {
@@ -2012,6 +2024,7 @@ impl Live {
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
+            join_leave: self.join_leave,
         };
         Some(
             files
@@ -2063,6 +2076,7 @@ impl Live {
             link_previews: self.link_previews,
             collapsed_threads: self.threads_on.unwrap_or(false),
             names: self.names,
+            join_leave: self.join_leave,
         };
         let files = self
             .search_files
@@ -2752,6 +2766,30 @@ impl Live {
                 self.ask_roles();
                 update.details = self.shown_details();
             }
+            ChangeSet::TeamNonMembers {
+                team_id,
+                invite_id,
+                users,
+            } => {
+                for user in users.iter() {
+                    self.avatars.learn(&user.id, user.last_picture_update);
+                    self.users.insert(user.id.clone(), user.clone());
+                }
+                let mut people: Vec<_> = users
+                    .iter()
+                    .filter(|user| user.id != self.me.0 && user.delete_at == 0 && !user.is_bot)
+                    .map(|user| self.profile(user))
+                    .collect();
+                people.sort_by_key(|person| person.display_name.to_lowercase());
+                let link = (!invite_id.is_empty()).then(|| {
+                    format!(
+                        "{}/signup_user_complete/?id={invite_id}",
+                        self.server.trim_end_matches('/')
+                    )
+                    .into()
+                });
+                update.team_invitees = Some((team_id.clone().into(), link, people));
+            }
             ChangeSet::NonMembers { channel_id, users } if self.is_open(channel_id) => {
                 for user in users.iter() {
                     self.avatars.learn(&user.id, user.last_picture_update);
@@ -2973,6 +3011,17 @@ impl Live {
                 if limit != self.dm_limit {
                     self.dm_limit = limit;
                     update.categories = self.shown_categories();
+                }
+                let join_leave = !preferences.iter().any(|p| {
+                    p.category == "advanced_settings"
+                        && p.name == "join_leave"
+                        && p.value == "false"
+                });
+                if join_leave != self.join_leave {
+                    self.join_leave = join_leave;
+                    if self.posts.is_some() {
+                        update.channel = self.channel_update();
+                    }
                 }
             }
             ChangeSet::LinkPreviews(on) if *on != self.link_previews => {
