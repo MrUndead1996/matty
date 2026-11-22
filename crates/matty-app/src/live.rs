@@ -248,6 +248,10 @@ pub struct Update {
     /// Invite people's answer (#962): the team, its invite link when the
     /// user may invite, and the server's people not on it.
     pub team_invitees: Option<(SharedString, Option<SharedString>, Vec<UserProfile>)>,
+    /// The user's signed-in sessions, for Security (#964).
+    pub sessions: Option<std::sync::Arc<[matty_api::models::Session]>>,
+    /// How a password change went: `Ok`, or the server's reason.
+    pub password_changed: Option<Result<(), SharedString>>,
     /// Something the server or an App refused, for a toast (#226).
     pub refused: Option<SharedString>,
     /// A link an App answered with, for Matty's link routing (#226).
@@ -2705,6 +2709,18 @@ impl Live {
             ChangeSet::Failed(matty_sync::CommandError::Offline { action }) => {
                 update.offline_refused = Some(action);
             }
+            ChangeSet::Sessions(sessions) => update.sessions = Some(sessions.clone()),
+            ChangeSet::PasswordChanged => update.password_changed = Some(Ok(())),
+            ChangeSet::Failed(matty_sync::CommandError::Server {
+                action: "change your password",
+                error,
+                ..
+            }) => {
+                let said = error
+                    .rsplit_once(" (")
+                    .map_or(error.as_str(), |(said, _)| said);
+                update.password_changed = Some(Err(said.to_owned().into()));
+            }
             ChangeSet::Failed(matty_sync::CommandError::Server {
                 action: "save your profile",
                 error,
@@ -3317,6 +3333,7 @@ pub fn presence(status: &str) -> Presence {
         "online" => Presence::Online,
         "away" => Presence::Away,
         "dnd" => Presence::Dnd,
+        "ooo" => Presence::OutOfOffice,
         _ => Presence::Offline,
     }
 }
@@ -3328,6 +3345,7 @@ pub fn status(presence: Presence) -> &'static str {
         Presence::Away => "away",
         Presence::Dnd => "dnd",
         Presence::Offline => "offline",
+        Presence::OutOfOffice => "ooo",
     }
 }
 

@@ -444,6 +444,14 @@ pub enum Command {
         /// The link's invite id.
         invite_id: String,
     },
+    /// Creates an open team and joins it (#971);
+    /// [`ChangeSet::TeamJoined`](crate::ChangeSet::TeamJoined) follows.
+    CreateTeam {
+        /// The name people see.
+        display_name: String,
+        /// The URL name.
+        name: String,
+    },
     /// Leaves a team; it drops out of the team list once the server
     /// agrees.
     LeaveTeam {
@@ -627,6 +635,24 @@ pub enum Command {
     TeamNonMembers {
         /// The team.
         team_id: String,
+    },
+    /// The user's signed-in sessions (#964);
+    /// [`ChangeSet::Sessions`](crate::ChangeSet::Sessions) answers.
+    Sessions,
+    /// Signs one of the user's sessions out (#964); the sessions come back
+    /// in [`ChangeSet::Sessions`](crate::ChangeSet::Sessions).
+    RevokeSession {
+        /// The session.
+        session_id: String,
+    },
+    /// Changes the user's password (#964);
+    /// [`ChangeSet::PasswordChanged`](crate::ChangeSet::PasswordChanged)
+    /// answers, or a failure.
+    ChangePassword {
+        /// The password now.
+        current: String,
+        /// The password to use from now on.
+        new: String,
     },
     /// Adds people already on the server to a team (#962).
     AddTeamMembers {
@@ -1079,6 +1105,11 @@ impl std::fmt::Debug for Command {
                 .field("team_id", team_id)
                 .finish(),
             // The invite id lets anyone join, so it stays out of logs.
+            Self::CreateTeam { display_name, name } => f
+                .debug_struct("CreateTeam")
+                .field("display_name", display_name)
+                .field("name", name)
+                .finish(),
             Self::JoinTeamByInvite { .. } => {
                 f.debug_struct("JoinTeamByInvite").finish_non_exhaustive()
             }
@@ -1165,6 +1196,12 @@ impl std::fmt::Debug for Command {
                 .debug_struct("TeamNonMembers")
                 .field("team_id", team_id)
                 .finish(),
+            Self::Sessions => f.write_str("Sessions"),
+            Self::RevokeSession { session_id } => f
+                .debug_struct("RevokeSession")
+                .field("session_id", session_id)
+                .finish(),
+            Self::ChangePassword { .. } => f.write_str("ChangePassword"),
             Self::AddTeamMembers { team_id, user_ids } => f
                 .debug_struct("AddTeamMembers")
                 .field("team_id", team_id)
@@ -2147,6 +2184,9 @@ impl Engine {
                 Message::Command(Command::JoinTeam { team_id }) => {
                     writes.push(Write::JoinTeam { team_id });
                 }
+                Message::Command(Command::CreateTeam { display_name, name }) => {
+                    writes.push(Write::CreateTeam { display_name, name });
+                }
                 Message::Command(Command::JoinTeamByInvite { invite_id }) => {
                     writes.push(Write::JoinTeamByInvite { invite_id });
                 }
@@ -2305,6 +2345,13 @@ impl Engine {
                 }
                 Message::Command(Command::TeamNonMembers { team_id }) => {
                     writes.push(Write::TeamNonMembers { team_id });
+                }
+                Message::Command(Command::Sessions) => writes.push(Write::Sessions),
+                Message::Command(Command::RevokeSession { session_id }) => {
+                    writes.push(Write::RevokeSession { session_id });
+                }
+                Message::Command(Command::ChangePassword { current, new }) => {
+                    writes.push(Write::Password(commands::PasswordChange { current, new }));
                 }
                 Message::Command(Command::AddTeamMembers { team_id, user_ids }) => {
                     writes.push(Write::AddTeamMembers { team_id, user_ids });
@@ -3952,6 +3999,10 @@ impl Engine {
                     users: Arc::from(users),
                 });
             }
+            Loaded::Sessions(sessions) => {
+                dirty.direct.push(ChangeSet::Sessions(Arc::from(sessions)));
+            }
+            Loaded::PasswordChanged => dirty.direct.push(ChangeSet::PasswordChanged),
             Loaded::NonMembers { channel_id, users } => {
                 sidebar::upsert_users(self.store.conn(), &users)?;
                 dirty.direct.push(ChangeSet::NonMembers {

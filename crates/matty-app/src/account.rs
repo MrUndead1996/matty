@@ -55,6 +55,8 @@ pub enum AccountEvent {
     SetStatus(Option<matty_api::models::CustomStatus>),
     /// "Edit profile…" (#212).
     EditProfile,
+    /// "Security…" (#964).
+    Security,
     /// "Custom emoji…" (#209).
     CustomEmoji,
     SignOut,
@@ -77,6 +79,7 @@ pub fn presence_label(presence: Presence) -> SharedString {
         Presence::Away => t!("presence-away"),
         Presence::Dnd => t!("presence-dnd"),
         Presence::Offline => t!("presence-offline"),
+        Presence::OutOfOffice => t!("presence-out-of-office"),
     }
 }
 
@@ -408,6 +411,14 @@ impl AccountView {
                 },
             ),
         );
+        let security_view = view.clone();
+        items.push(
+            MenuItem::new("account.security", t!("account-security")).on_click(move |_, _, cx| {
+                security_view
+                    .update(cx, |_, cx| cx.emit(AccountEvent::Security))
+                    .ok();
+            }),
+        );
         let emoji_view = view.clone();
         items.push(
             MenuItem::new("account.emoji", t!("account-custom-emoji")).on_click(move |_, _, cx| {
@@ -542,7 +553,7 @@ impl AccountView {
             Presence::Online => palette.sidebar_online,
             Presence::Away => palette.sidebar_away,
             Presence::Dnd => palette.sidebar_dnd,
-            Presence::Offline => theme.colors.sidebar_muted_foreground(),
+            Presence::Offline | Presence::OutOfOffice => theme.colors.sidebar_muted_foreground(),
         };
         let initial: String = self.account.display_name.chars().take(1).collect();
         let status = self
