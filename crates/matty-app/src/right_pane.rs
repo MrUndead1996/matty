@@ -4006,6 +4006,9 @@ impl RightPaneView {
             });
         let is_channel = kind_icon.is_some();
         let manage_members = is_channel && channel.rights.members;
+        // A group message's "Add" starts a bigger group, which anyone may.
+        let add_members =
+            manage_members || matches!(channel.kind, crate::sidebar::ChannelKind::Group { .. });
         let view = cx.entity().downgrade();
         let me = self.me.clone();
         let can_manage = channel.rights.roles;
@@ -4022,7 +4025,7 @@ impl RightPaneView {
                     .child(label(
                         t!("pane-members", count = channel.members).to_string(),
                     ))
-                    .when(manage_members, |row| {
+                    .when(add_members, |row| {
                         row.child(
                             Button::new("info.members.add")
                                 .variant(ButtonVariant::Ghost)
