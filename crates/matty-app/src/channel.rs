@@ -1002,6 +1002,18 @@ pub fn plain_text(body: &str) -> String {
     )))
 }
 
+/// A person's own color for their name in compact messages, as the web
+/// app's "Colorize usernames": a hue from their id, light enough on a dark
+/// theme and dark enough on a light one.
+fn name_color(user_id: &str, dark: bool) -> gpui_kit::Hsla {
+    // FNV-1a, so a person keeps their color across runs.
+    let hash = user_id.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    let hue = (hash % 360) as f32 / 360.;
+    gpui_kit::hsla(hue, 0.6, if dark { 0.7 } else { 0.38 }, 1.)
+}
+
 /// The row density from Preferences (PLAN §4.2 display).
 pub fn message_density(cx: &App) -> MessageDensity {
     match SettingsStore::global(cx).read(cx).get().display {
@@ -1231,6 +1243,11 @@ const QUICK_REACTION_COUNT: usize = 3;
 /// the user picked most, then Mattermost's defaults, as reaction values (a
 /// glyph, or `:name:` for a custom emoji).
 pub(crate) fn quick_reactions(cx: &App) -> Vec<SharedString> {
+    if crate::settings::SettingsStore::try_global(cx)
+        .is_some_and(|store| !store.read(cx).get().quick_reactions)
+    {
+        return Vec::new();
+    }
     let mut quick: Vec<SharedString> = Vec::new();
     let picked = crate::emoji::frequent(cx)
         .into_iter()
@@ -1948,7 +1965,9 @@ impl ChannelView {
         self.editing = None;
         // Open at the "New messages" line when there is one, as Mattermost
         // does, so nothing unread scrolls past; the pill leads to the end.
-        let at_end = std::mem::take(&mut self.open_at_end);
+        let at_end = std::mem::take(&mut self.open_at_end)
+            || SettingsStore::try_global(cx)
+                .is_some_and(|store| store.read(cx).get().open_at_newest);
         let divider = self.rows.iter().position(|row| *row == Row::NewMessages);
         if let Some(divider) = divider.filter(|_| !at_end) {
             self.list.update(cx, |list, cx| {
@@ -4581,15 +4600,21 @@ impl ChannelView {
         let Some(profile) = profile.cloned() else {
             return avatar.aria_label(post.author.clone()).into_any_element();
         };
-        // The author's presence on the avatar (#135).
+        // The author's presence on the avatar (#135), unless the user
+        // turned it off.
         let theme = UiTheme::read(cx);
+        let shows_status = crate::settings::SettingsStore::try_global(cx)
+            .is_none_or(|store| store.read(cx).get().avatar_status);
         let avatar = avatar
             .aria_label(post.author.clone())
-            .status(crate::style::avatar_status(
-                profile.presence,
-                &crate::style::Palette::read(cx),
-            ))
-            .ring_color(theme.colors.background);
+            .when(shows_status, |avatar| {
+                avatar
+                    .status(crate::style::avatar_status(
+                        profile.presence,
+                        &crate::style::Palette::read(cx),
+                    ))
+                    .ring_color(theme.colors.background)
+            });
         let label = crate::style::presence_name(&post.author, profile.presence);
         Self::profile_popover(&id, "profile", label, avatar, profile, card, cx)
     }
@@ -4609,14 +4634,16 @@ impl ChannelView {
         }
         let profile = profile.cloned()?;
         let name = post.author.clone();
+        let colorize = message_density(cx) == MessageDensity::Compact
+            && SettingsStore::global(cx).read(cx).get().colorize_names;
+        let trigger = div()
+            .when(colorize, |trigger| {
+                let dark = UiTheme::read(cx).mode == crate::ui::theme::ThemeMode::Dark;
+                trigger.text_color(name_color(&post.author_id, dark))
+            })
+            .child(name.clone());
         Some(Self::profile_popover(
-            id,
-            "author",
-            name.clone(),
-            name,
-            profile,
-            card,
-            cx,
+            id, "author", name, trigger, profile, card, cx,
         ))
     }
 
