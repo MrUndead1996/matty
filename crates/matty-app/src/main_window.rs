@@ -760,6 +760,16 @@ impl MainWindow {
                 ChannelEvent::OpenPinned => this.show_pinned(cx),
                 ChannelEvent::OpenEditHistory(post) => this.show_edit_history(post, cx),
                 ChannelEvent::OpenInfo => this.show_channel_info(cx),
+                ChannelEvent::SetMuted(muted) => {
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.set_muted(id, *muted, cx);
+                    }
+                }
+                ChannelEvent::CopyChannelLink => {
+                    if let Some(id) = this.selected_channel.clone() {
+                        this.copy_channel_link(&id, cx);
+                    }
+                }
                 ChannelEvent::SwapPanes => this.swap_panes(window, cx),
                 ChannelEvent::ClosePane => this.close_main_pane(window, cx),
                 ChannelEvent::OpenDirect { user_id, .. } => {
@@ -1923,7 +1933,7 @@ impl MainWindow {
         self.toasts.update(cx, |toasts, cx| {
             toasts.push(
                 "reminder",
-                Notice::new(crate::popout::reminder_notice(at))
+                Notice::new(crate::popout::reminder_notice(at, cx))
                     .timeout(std::time::Duration::from_secs(4)),
                 cx,
             );
@@ -4802,6 +4812,19 @@ impl MainWindow {
                 tracing::info!(link = %crate::deeplink::redacted(&url), "ignored a link Matty cannot show");
             }
             LinkTarget::Nothing => {}
+            // Only from a message, never from a link the OS hands over.
+            LinkTarget::AddToChannel {
+                channel_id,
+                user_ids,
+            } if external => {
+                if let Some(live) = &self.live {
+                    live.send(matty_sync::Command::AddMembers {
+                        channel_id,
+                        user_ids,
+                    });
+                }
+            }
+            LinkTarget::AddToChannel { .. } => {}
             LinkTarget::Hashtag(tag) => self.search(format!("#{tag}").into(), window, cx),
             LinkTarget::User(username) => self.open_user(username, window, cx),
             LinkTarget::Channel { team: named, name } => {

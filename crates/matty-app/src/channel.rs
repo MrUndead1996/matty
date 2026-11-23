@@ -492,6 +492,8 @@ pub enum RemindAt {
     In2Hours,
     /// Tomorrow at 9:00 in the user's zone.
     Tomorrow,
+    /// A time picked in the "Custom…" dialog, in Unix seconds.
+    At(i64),
 }
 
 impl RemindAt {
@@ -508,6 +510,7 @@ impl RemindAt {
             Self::In1Hour => t!("chan-remind-1-hour"),
             Self::In2Hours => t!("chan-remind-2-hours"),
             Self::Tomorrow => t!("chan-remind-tomorrow"),
+            Self::At(_) => t!("chan-remind-custom"),
         }
     }
 
@@ -517,6 +520,7 @@ impl RemindAt {
             Self::In30Minutes => 30,
             Self::In1Hour => 60,
             Self::In2Hours => 120,
+            Self::At(at) => return at,
             Self::Tomorrow => {
                 let tomorrow = now
                     .to_zoned(zone.clone())
@@ -1157,6 +1161,10 @@ pub enum ChannelEvent {
     OpenInfo,
     /// The user starred or unstarred the channel; the header shows it.
     ToggleFavorite(bool),
+    /// Mute or unmute the channel from its name's menu (#1020).
+    SetMuted(bool),
+    /// Copy the channel's link from its name's menu (#1020).
+    CopyChannelLink,
     /// The user chose View profile on someone's profile card (#212).
     ViewProfile(UserProfile),
     /// "Add to channel" on someone's profile card (#212).
@@ -1468,6 +1476,10 @@ pub struct ChannelView {
     priority: crate::priority::Choice,
     /// Picks a custom time for "Schedule message" (#220).
     schedule_dialog: Entity<crate::scheduled::ScheduleDialog>,
+    /// Picks the time for "Remind me → Custom…" (#1021).
+    remind_dialog: Entity<crate::scheduled::ScheduleDialog>,
+    /// The post the reminder dialog is for.
+    remind_post: Option<SharedString>,
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
@@ -1772,6 +1784,7 @@ impl ChannelView {
         let add_members = cx.new(|cx| AddMembersView::new(window, cx));
         let picker = cx.new(|cx| EmojiPickerState::new(crate::emoji::categories(), window, cx));
         let (schedule_dialog, scheduling) = outgoing::schedule_dialog(window, cx);
+        let (remind_dialog, reminding) = outgoing::remind_dialog(window, cx);
         let bookmarks = cx.new(|cx| crate::bookmarks::BookmarksBar::new(window, cx));
         let composer_input = composer.read(cx).input().clone();
         let subscriptions = vec![
@@ -1782,6 +1795,7 @@ impl ChannelView {
                 this.slash_line(&text, cx);
             }),
             scheduling,
+            reminding,
             cx.subscribe(
                 &bookmarks,
                 |_, _, event: &crate::bookmarks::BarEvent, cx| {
@@ -1816,6 +1830,7 @@ impl ChannelView {
                     model.muted = muted;
                     model.notifications = notifications;
                 }
+                this.rebuild_header_menu(cx);
                 cx.notify();
                 cx.emit(ChannelEvent::SetNotifications {
                     muted,
@@ -1940,6 +1955,8 @@ impl ChannelView {
             slash: Default::default(),
             priority: crate::preview::composer_priority(),
             schedule_dialog,
+            remind_dialog,
+            remind_post: None,
             _subscriptions: subscriptions,
         };
         this.set_model(model, window, cx);
@@ -2610,8 +2627,15 @@ impl ChannelView {
     pub fn set_favorite(&mut self, favorite: bool, cx: &mut Context<Self>) {
         if let Some(model) = self.model.as_mut().map(Rc::make_mut) {
             model.favorite = favorite;
+            self.rebuild_header_menu(cx);
             cx.notify();
         }
+    }
+
+    /// The name's menu labels favorite and mute by the current state.
+    fn rebuild_header_menu(&mut self, cx: &mut Context<Self>) {
+        let model = self.model.clone();
+        self.refresh_header_menu(model.as_deref(), cx);
     }
 
     /// Sync loaded the channel's header, purpose and counts; the scroll
@@ -2657,6 +2681,7 @@ impl ChannelView {
         {
             model.muted = muted;
             model.notifications = notifications;
+            self.rebuild_header_menu(cx);
             cx.notify();
         }
     }
@@ -2724,6 +2749,7 @@ impl ChannelView {
     pub fn set_muted(&mut self, muted: bool, cx: &mut Context<Self>) {
         if let Some(model) = self.model.as_mut().map(Rc::make_mut) {
             model.muted = muted;
+            self.rebuild_header_menu(cx);
             cx.notify();
         }
     }
@@ -3876,21 +3902,33 @@ impl ChannelView {
         items.push(MenuItem::submenu(
             gpui_kit::ElementId::Name("post.menu.remind".into()),
             t!("chan-remind"),
-            RemindAt::ALL.map(|at| {
-                let id = id.clone();
-                let view = view.clone();
-                MenuItem::new(
-                    gpui_kit::ElementId::Name(format!("post.menu.remind.{at:?}").into()),
-                    at.label(),
-                )
-                .on_click(move |_, _, cx| {
-                    let event = ChannelEvent::Remind {
-                        post: id.clone(),
-                        at,
-                    };
-                    view.update(cx, |_, cx| cx.emit(event)).ok();
+            RemindAt::ALL
+                .map(|at| {
+                    let id = id.clone();
+                    let view = view.clone();
+                    MenuItem::new(
+                        gpui_kit::ElementId::Name(format!("post.menu.remind.{at:?}").into()),
+                        at.label(),
+                    )
+                    .on_click(move |_, _, cx| {
+                        let event = ChannelEvent::Remind {
+                            post: id.clone(),
+                            at,
+                        };
+                        view.update(cx, |_, cx| cx.emit(event)).ok();
+                    })
                 })
-            }),
+                .into_iter()
+                .chain([{
+                    let id = id.clone();
+                    let view = view.clone();
+                    MenuItem::new("post.menu.remind.custom", t!("chan-remind-custom")).on_click(
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| this.pick_reminder(id.clone(), window, cx))
+                                .ok();
+                        },
+                    )
+                }]),
         ));
         items.extend([
             {
@@ -4094,7 +4132,42 @@ impl ChannelView {
             model.is_some_and(|m| matches!(m.kind, ChannelKind::Public | ChannelKind::Private));
         let rights = model.map(|m| m.rights).unwrap_or_default();
         let notify_view = view.clone();
+        let emit = |id: &'static str, label: SharedString, event: ChannelEvent| {
+            let view = view.clone();
+            MenuItem::new(id, label).on_click(move |_, _, cx| {
+                view.update(cx, |_, cx| cx.emit(event.clone())).ok();
+            })
+        };
+        let favorite = model.is_some_and(|m| m.favorite);
+        let muted = model.is_some_and(|m| m.muted);
+        // The official client's first block: info, favorite, mute, link.
         let mut items = vec![
+            emit("channel.menu.info", t!("chan-info"), ChannelEvent::OpenInfo),
+            emit(
+                "channel.menu.favorite",
+                if favorite {
+                    t!("chan-remove-favorite")
+                } else {
+                    t!("chan-add-favorite")
+                },
+                ChannelEvent::ToggleFavorite(!favorite),
+            ),
+            emit(
+                "channel.menu.mute",
+                match (muted, is_channel) {
+                    (true, true) => t!("chan-menu-unmute-channel"),
+                    (true, false) => t!("chan-menu-unmute-conversation"),
+                    (false, true) => t!("chan-menu-mute-channel"),
+                    (false, false) => t!("chan-menu-mute-conversation"),
+                },
+                ChannelEvent::SetMuted(!muted),
+            ),
+            emit(
+                "channel.menu.copy-link",
+                t!("chan-copy-link"),
+                ChannelEvent::CopyChannelLink,
+            ),
+            MenuItem::separator(),
             MenuItem::new("channel.menu.notifications", t!("chan-menu-notifications")).on_click(
                 move |_, window, cx| {
                     notify_view
@@ -6012,6 +6085,7 @@ impl Render for ChannelView {
             .child(self.convert_dialog(window, cx))
             .child(self.lightbox(window, cx))
             .child(self.schedule_dialog.clone())
+            .child(self.remind_dialog.clone())
     }
 }
 
@@ -6476,6 +6550,10 @@ mod tests {
             1_793_793_600 + 1800
         );
         assert_eq!(RemindAt::In2Hours.target(now, &zone), 1_793_793_600 + 7200);
+        assert_eq!(
+            RemindAt::At(1_800_000_000).target(now, &zone),
+            1_800_000_000
+        );
         // 2026-11-05 09:00 in Kolkata is 03:30 UTC.
         assert_eq!(
             RemindAt::Tomorrow.target(now, &zone),

@@ -58,6 +58,7 @@ chan-remind-30-minutes = In 30 minutes
 chan-remind-1-hour = In 1 hour
 chan-remind-2-hours = In 2 hours
 chan-remind-tomorrow = Tomorrow at 9:00
+chan-remind-custom = Custom…
 
 ## A message's menus and hover toolbar
 
@@ -120,6 +121,10 @@ chan-download = Download
 
 chan-menu = Channel menu
 chan-menu-notifications = Notification preferences…
+chan-menu-mute-channel = Mute channel
+chan-menu-unmute-channel = Unmute channel
+chan-menu-mute-conversation = Mute conversation
+chan-menu-unmute-conversation = Unmute conversation
 chan-menu-header = Edit header…
 chan-menu-purpose = Edit purpose…
 chan-menu-rename = Rename channel…
@@ -214,3 +219,4 @@ file-preview-detail = A preview of the downloaded file.
 file-preview-cut = The first { $lines } lines. The downloaded file has the rest.
 file-preview-reveal = Show in folder
 file-preview-close = Close
+chan-add-mentioned = Would you like to [add them to the channel]({ $link })? They will have access to all message history.
