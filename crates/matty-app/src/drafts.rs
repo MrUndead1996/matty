@@ -181,7 +181,11 @@ impl DraftsView {
                         }),
                 )
             })
-            .children(tabs.map(|tabs| div().ml(theme.space(2.)).child(tabs)))
+            .children(tabs.map(|tabs| {
+                crate::chrome::exclude_from_drag(div())
+                    .ml(theme.space(2.))
+                    .child(tabs)
+            }))
     }
 
     /// A card per draft: where it goes, the text as it will read, then

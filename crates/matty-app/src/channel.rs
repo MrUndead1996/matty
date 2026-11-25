@@ -4900,7 +4900,7 @@ impl ChannelView {
             .border_b(style::hairline())
             .border_color(theme.colors.border)
             .child(
-                div()
+                crate::chrome::exclude_from_drag(div())
                     .flex()
                     .items_center()
                     .min_w_0()
@@ -4976,7 +4976,7 @@ impl ChannelView {
                     ),
             )
             .child(
-                div()
+                crate::chrome::exclude_from_drag(div())
                     .flex()
                     .items_center()
                     .flex_shrink_0()
