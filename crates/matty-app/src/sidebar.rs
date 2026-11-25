@@ -1404,9 +1404,19 @@ impl SidebarView {
                     .px(theme.space(2.))
                     .flex()
                     .items_center()
-                    .child(div().flex_1().min_w_0().flex().child(server)),
+                    .child(
+                        crate::chrome::exclude_from_drag(div())
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .child(server),
+                    ),
             )
-            .children(tabs.map(|tabs| div().pb(theme.space(2.5)).child(tabs)))
+            .children(tabs.map(|tabs| {
+                crate::chrome::exclude_from_drag(div())
+                    .pb(theme.space(2.5))
+                    .child(tabs)
+            }))
     }
 
     /// Spec §2.2: a search field look-alike that opens the quick switcher,

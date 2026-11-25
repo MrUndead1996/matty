@@ -3009,7 +3009,7 @@ impl RightPaneView {
                     })),
             )
             .child(
-                div()
+                crate::chrome::exclude_from_drag(div())
                     .flex()
                     .items_center()
                     .flex_shrink_0()

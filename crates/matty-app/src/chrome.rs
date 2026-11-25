@@ -8,7 +8,8 @@
 
 use gpui_icons::{LucideIcon, lucide};
 use gpui_kit::{
-    AnyElement, App, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, px,
+    AnyElement, App, Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    Styled as _, Window, div, px,
 };
 
 use crate::actions::{self, HistoryBack, HistoryForward, ToggleSidebar};
@@ -207,6 +208,19 @@ pub fn has_controls(chrome: PaneChrome, window: &Window) -> bool {
     chrome.controls && draws_window_controls(window)
 }
 
+/// Keeps a group of controls out of its parent's native drag hitbox.
+///
+/// On Windows GPUI checks the parent's caption hitbox before the child's
+/// window-control hitbox. Occluding the caption behind the controls lets
+/// native caption buttons and ordinary client clicks reach their targets.
+pub(crate) fn exclude_from_drag(group: Div) -> Div {
+    if cfg!(windows) {
+        group.occlude()
+    } else {
+        group
+    }
+}
+
 /// Makes a header drag the window when it is in the main window.
 pub fn drag<E>(
     id: impl Into<gpui_kit::ElementId>,
@@ -343,7 +357,7 @@ pub fn frame(
             .border_color(theme.colors.border)
     };
     let leading = leading(chrome, window, cx).map(|group| {
-        edge(div())
+        edge(exclude_from_drag(div()))
             .pl(theme.space(2.))
             .child(group)
             .into_any_element()
@@ -356,8 +370,9 @@ pub fn frame(
     let panels = (id != "threads.header" && id != "pane.header")
         .then(|| panels(chrome, id == "channel.header", cx))
         .flatten()
-        .map(|group| edge(div()).child(group));
-    let trailing = trailing(chrome, window).map(|controls| edge(div()).child(controls));
+        .map(|group| edge(exclude_from_drag(div())).child(group));
+    let trailing =
+        trailing(chrome, window).map(|controls| edge(exclude_from_drag(div())).child(controls));
     if leading.is_none() && panels.is_none() && trailing.is_none() && !chrome.drag {
         return header.into_any_element();
     }
