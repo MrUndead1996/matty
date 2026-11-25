@@ -156,13 +156,17 @@ mod platform {
 #[cfg(target_os = "windows")]
 mod platform {
     use std::io;
+    use std::os::windows::process::CommandExt as _;
     use std::process::Command;
+
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
     const RUN: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
     const VALUE: &str = "Matty";
 
     pub fn apply(enabled: bool) -> io::Result<()> {
         let mut reg = Command::new("reg");
+        reg.creation_flags(CREATE_NO_WINDOW.0);
         if enabled {
             let exe = std::env::current_exe()?;
             reg.args(["add", RUN, "/v", VALUE, "/t", "REG_SZ", "/f", "/d"])
