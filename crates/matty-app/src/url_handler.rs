@@ -169,7 +169,10 @@ mod platform {
 
 #[cfg(target_os = "windows")]
 mod platform {
+    use std::os::windows::process::CommandExt as _;
     use std::process::Command;
+
+    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
     use super::{Owner, SCHEME, decide};
 
@@ -178,6 +181,7 @@ mod platform {
     pub fn owner() -> Owner {
         let key = format!(r"HKCR\{SCHEME}\shell\open\command");
         let handler = Command::new("reg")
+            .creation_flags(CREATE_NO_WINDOW.0)
             .args(["query", &key, "/ve"])
             .output()
             .ok()
