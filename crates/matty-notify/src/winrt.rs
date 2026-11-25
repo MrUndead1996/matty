@@ -83,7 +83,7 @@ impl Notifier for Toasts {
     }
 
     fn set_badge(&self, badge: Badge) {
-        // The taskbar overlay needs the window handle, from the app (#215).
+        // The app owns the taskbar overlay, which needs its main window handle.
         tracing::debug!(?badge, "badge");
     }
 }

@@ -227,6 +227,8 @@ mod sso;
 mod style_editor;
 mod style_library;
 mod style_preview;
+#[cfg(target_os = "windows")]
+mod taskbar;
 mod teams;
 mod triage;
 
@@ -277,6 +279,8 @@ pub struct MainWindow {
     account_chose_names: bool,
     /// Where notifications go on this platform (#141).
     notifier: Box<dyn matty_notify::Notifier>,
+    #[cfg(target_os = "windows")]
+    taskbar_badge: Option<taskbar::TaskbarBadge>,
     /// What the dock badge shows now (#141).
     badge: matty_notify::Badge,
     /// The Browse channels dialog, opened from the sidebar's plus menu.
@@ -1559,6 +1563,8 @@ impl MainWindow {
             } else {
                 matty_notify::backend::platform(clicked_tx)
             },
+            #[cfg(target_os = "windows")]
+            taskbar_badge: taskbar::TaskbarBadge::new(window),
             badge: matty_notify::Badge::Clear,
             notify_props: preview_props,
             zone_checked: false,
@@ -1650,6 +1656,8 @@ impl MainWindow {
             .detach();
         cx.observe(&this.teams_model, |this, _, cx| this.update_badge(cx))
             .detach();
+        #[cfg(target_os = "windows")]
+        this.update_badge(cx);
         this.restore_split(window, cx);
         // `matty --offline` opens the last account's cache without a session;
         // otherwise a saved session opens it and connects (PLAN §6.6).
@@ -4644,8 +4652,8 @@ impl MainWindow {
         TitleBar::new().page(true).h(px(metrics::TITLE_BAR_HEIGHT))
     }
 
-    /// Puts the unread and mention totals on the dock icon (#141); signed
-    /// out, the sidebar is loading and the badge clears.
+    /// Updates the app icon badge (#141); signed out, the sidebar is
+    /// loading and the badge clears.
     fn update_badge(&mut self, cx: &mut Context<Self>) {
         let rail = self.teams_model.read(cx);
         let badge =
@@ -4654,6 +4662,10 @@ impl MainWindow {
         if badge != self.badge {
             self.badge = badge;
             self.notifier.set_badge(badge);
+            #[cfg(target_os = "windows")]
+            if let Some(taskbar) = &self.taskbar_badge {
+                taskbar.set(badge != matty_notify::Badge::Clear);
+            }
         }
         #[cfg(target_family = "wasm")]
         self.set_page_title(cx);

@@ -55,6 +55,7 @@ sidebar-jump = Jump to…
 sidebar-jump-label = Jump to a channel or person, or search messages, { $keys }
 # The rows above the tree.
 sidebar-unreads = Unreads
+taskbar-unread-messages = Unread messages
 sidebar-mentions = Mentions
 sidebar-saved = Saved
 # Section headers: the count a collapsed section shows, and its buttons.
