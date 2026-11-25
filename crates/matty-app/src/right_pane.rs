@@ -95,6 +95,20 @@ pub struct ListedPost {
     pub post: Post,
 }
 
+impl ListedPost {
+    /// The posts a listing shows, if `content` is one.
+    pub fn of(content: &RightPaneContent) -> &[ListedPost] {
+        match content {
+            RightPaneContent::Pinned { posts, .. }
+            | RightPaneContent::Saved(posts)
+            | RightPaneContent::Mentions(posts)
+            | RightPaneContent::Unreads(posts)
+            | RightPaneContent::EditHistory(posts) => posts,
+            _ => &[],
+        }
+    }
+}
+
 /// The kinds of file the Files lists filter by, as in Mattermost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FileKind {
@@ -1462,7 +1476,7 @@ impl RightPaneView {
         );
         let reply = Post {
             webhook: None,
-            auto_reply: false,
+            tag: None,
             created_ms: 0,
             id: format!("{root}-pending-{seq}").into(),
             author: me.clone(),
@@ -3119,10 +3133,11 @@ impl RightPaneView {
         post: &Post,
         root: bool,
         highlight: MessageHighlight,
-        (away, editor, menus): (
+        (away, editor, menus, in_thread): (
             bool,
             Option<&ReplyEditor>,
             Option<&crate::interactive::Menus>,
+            bool,
         ),
         presence: Option<Presence>,
         cx: &mut App,
@@ -3130,10 +3145,9 @@ impl RightPaneView {
         let theme = UiTheme::read(cx).clone();
         let id = post.id.clone();
         let initial: String = post.author.chars().take(1).collect();
-        // Only the thread passes card menus: its posts get the hover
-        // toolbar and cards, as in the channel (#620). Listings don't:
-        // their posts are not the pane's thread.
-        let in_thread = menus.is_some();
+        // The thread's posts get the hover toolbar, as in the channel
+        // (#620). Listings' don't: their posts are not the pane's thread.
+        // Both show cards when given menus.
         let collapsed = SettingsStore::global(cx)
             .read(cx)
             .get()
@@ -3267,7 +3281,7 @@ impl RightPaneView {
                         &model.root,
                         true,
                         highlight(0, &model.root),
-                        (away, None, Some(&menus.borrow())),
+                        (away, None, Some(&menus.borrow()), true),
                         Self::presence_in(&view, &model.root.author, cx),
                         cx,
                     )
@@ -3290,7 +3304,7 @@ impl RightPaneView {
                                 reply,
                                 false,
                                 highlight(index, reply),
-                                (away, editor, Some(&menus.borrow())),
+                                (away, editor, Some(&menus.borrow()), true),
                                 Self::presence_in(&view, &reply.author, cx),
                                 cx,
                             )
@@ -3903,7 +3917,7 @@ impl RightPaneView {
                         },
                         true,
                         MessageHighlight::None,
-                        (false, None, None),
+                        (false, None, None, false),
                         self.presence_of(&item.post.author),
                         cx,
                     ))
@@ -3947,10 +3961,8 @@ impl RightPaneView {
             .overflow_y_scroll()
             .py(theme.space(2.))
             .children(items.iter().map(|item| {
-                let channel = match item.channel_name.as_ref() {
-                    name if name.contains(' ') => name.to_string(),
-                    name => format!("#{name}"),
-                };
+                let listing_menus = crate::interactive::Menus::default();
+                let channel = item.channel_name.to_string();
                 let (jump_channel, jump_post) = (item.channel_id.clone(), item.post.id.clone());
                 let jump_view = view.clone();
                 div()
@@ -3995,8 +4007,10 @@ impl RightPaneView {
                         },
                         true,
                         MessageHighlight::None,
-                        // Listings show no cards, as before.
-                        (false, None, None),
+                        // Cards show as in Mattermost's lists: a permalink's
+                        // preview, attachments, link previews. Their menus
+                        // keep no state here.
+                        (false, None, Some(&listing_menus), false),
                         self.presence_of(&item.post.author),
                         cx,
                     ))
@@ -5035,7 +5049,7 @@ mod tests {
     fn post(id: &str) -> Post {
         Post {
             webhook: None,
-            auto_reply: false,
+            tag: None,
             created_ms: 0,
             id: id.to_string().into(),
             author: "Ada".into(),
