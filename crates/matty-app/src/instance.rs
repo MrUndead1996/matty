@@ -1,18 +1,17 @@
 //! One Matty per user (#84, PLAN §6.7). The first launch listens on a
-//! local socket in Matty's config folder; a second launch hands its link,
-//! or nothing to only bring the window forward, to the first and exits.
+//! local socket or named pipe; a second launch hands its link, or nothing
+//! to only bring the window forward, to the first and exits.
 //!
 //! macOS already sends a bundled app's links to the running copy as
 //! open-url events; the socket covers a launch from the command line
-//! there and every launch on Linux. Windows has no forwarding yet: each
-//! launch runs on its own. Preview mode never forwards, so fixture windows
-//! can run side by side.
+//! there and every launch on Linux. Windows forwards over a named pipe.
+//! Preview mode never forwards, so fixture windows can run side by side.
 
 use std::path::PathBuf;
 
-/// Where the running Matty listens: one socket per config folder, and a
-/// separate one for debug builds so they never take a release build's
-/// links.
+/// One endpoint per config folder, and a separate one for debug builds
+/// so they never take a release build's links. On Windows this path
+/// identifies the pipe; it is not created on disk.
 fn socket_path() -> Option<PathBuf> {
     let name = if cfg!(debug_assertions) {
         "matty-dev.sock"
@@ -44,6 +43,21 @@ pub(crate) fn listen(links: async_channel::Sender<String>) {
     }
 }
 
+#[cfg(any(unix, windows))]
+const MAX_LINK: usize = 8 * 1024;
+
+#[cfg(any(unix, windows))]
+fn deliver(links: &async_channel::Sender<String>, link: &str) -> bool {
+    let link = link.trim();
+    if !link.is_empty() {
+        tracing::info!(
+            link = %crate::deeplink::redacted(link),
+            "another launch handed over a link"
+        );
+    }
+    links.try_send(link.to_owned()).is_ok()
+}
+
 #[cfg(unix)]
 mod imp {
     use std::io::{self, Read as _, Write as _};
@@ -51,8 +65,7 @@ mod imp {
     use std::path::Path;
     use std::time::Duration;
 
-    /// The most a link may take: more is not a link.
-    const MAX_LINK: u64 = 8 * 1024;
+    use super::{MAX_LINK, deliver};
 
     pub(super) fn forward(path: &Path, link: &str) -> bool {
         let Ok(mut stream) = UnixStream::connect(path) else {
@@ -92,13 +105,7 @@ mod imp {
                     let Some(link) = read_link(stream) else {
                         continue;
                     };
-                    if !link.is_empty() {
-                        tracing::info!(
-                            link = %crate::deeplink::redacted(&link),
-                            "another launch handed over a link"
-                        );
-                    }
-                    if links.try_send(link).is_err() {
+                    if !deliver(&links, &link) {
                         break;
                     }
                 }
@@ -112,12 +119,19 @@ mod imp {
         // link is still there to read, so carry on without the timeout.
         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
         let mut link = String::new();
-        stream.take(MAX_LINK).read_to_string(&mut link).ok()?;
-        Some(link.trim().to_owned())
+        stream
+            .take(MAX_LINK as u64)
+            .read_to_string(&mut link)
+            .ok()?;
+        Some(link)
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[path = "instance/windows.rs"]
+mod imp;
+
+#[cfg(not(any(unix, windows)))]
 mod imp {
     use std::path::Path;
 
@@ -133,7 +147,7 @@ mod imp {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::imp;
 
@@ -147,13 +161,24 @@ mod tests {
         );
         let (tx, rx) = async_channel::unbounded();
         imp::listen(&path, tx).unwrap_or_else(|e| panic!("{e}"));
-        assert!(imp::forward(&path, "matty://x/team/pl/a\n"));
+        #[cfg(windows)]
+        {
+            let (other, _) = async_channel::unbounded();
+            assert!(
+                imp::listen(&path, other).is_err(),
+                "the first owns the pipe"
+            );
+            assert!(!imp::forward(&path, &"x".repeat(super::MAX_LINK + 1)));
+        }
+        let callback = "mattermost://chat.example.com/login/desktop?client_token=test-client&server_token=test-server";
+        assert!(imp::forward(&path, &format!("{callback}\n")));
         assert!(imp::forward(&path, ""));
-        assert_eq!(rx.recv_blocking().as_deref(), Ok("matty://x/team/pl/a"));
+        assert_eq!(rx.recv_blocking().as_deref(), Ok(callback));
         assert_eq!(rx.recv_blocking().as_deref(), Ok(""));
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_crashed_launchs_socket_is_replaced() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let path = dir.path().join("matty.sock");
