@@ -21,6 +21,10 @@ pub struct TeamPatch {
     /// Anyone on the server may join without an invite.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_open_invite: Option<bool>,
+    /// Email domains a person must have to join, separated by commas;
+    /// empty for any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_domains: Option<String>,
 }
 
 impl Client {
@@ -116,6 +120,28 @@ impl Client {
     pub async fn regenerate_invite_id(&self, team_id: &str) -> Result<Team, ApiError> {
         self.post(&format!("teams/{team_id}/regenerate_invite_id"), &json!({}))
             .await
+    }
+
+    /// `POST teams/{team_id}/image`: sets the team's icon from an image
+    /// file (JPEG, PNG, GIF or BMP).
+    pub async fn set_team_icon(
+        &self,
+        team_id: &str,
+        bytes: Vec<u8>,
+        file_name: String,
+    ) -> Result<(), ApiError> {
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+        let form = reqwest::multipart::Form::new().part("image", part);
+        self.send_multipart(&format!("teams/{team_id}/image"), form)
+            .await
+            .map(|_| ())
+    }
+
+    /// `DELETE teams/{team_id}/image`: goes back to the team's initials.
+    pub async fn remove_team_icon(&self, team_id: &str) -> Result<(), ApiError> {
+        self.delete::<Value>(&format!("teams/{team_id}/image"))
+            .await
+            .map(|_| ())
     }
 
     /// `POST teams/{team_id}/invite/email`: emails an invite to each address.
