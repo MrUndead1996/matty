@@ -1,12 +1,14 @@
 //! Local app settings: the "Local to Matty" column of PLAN §7.
 //!
 //! Stored as JSON in the OS config directory. Writes are atomic (temporary
-//! file, then rename) and run on the background executor. Keys this version
-//! does not know are kept, so an older Matty never drops a newer one's
-//! settings. Server-synced preferences live in the store; the few that
+//! file, then rename) and normally run on the background executor. Unknown
+//! keys are kept, so an older Matty never drops a newer one's settings.
+//! Server-synced preferences live in the store; the few that
 //! Preferences shows (message display, clock, name format, send key) are
 //! mirrored here too, so they apply before sync connects (#156, #157).
 
+#[cfg(not(target_family = "wasm"))]
+use std::sync::{Arc, Mutex};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -754,6 +756,30 @@ fn save_file(path: &Path, settings: &Settings) -> io::Result<()> {
     std::fs::rename(&temporary, path)
 }
 
+#[cfg(not(target_family = "wasm"))]
+#[derive(Default)]
+struct NativeSave {
+    revision: u64,
+    written: Arc<Mutex<u64>>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn write_revision(
+    written: &Mutex<u64>,
+    revision: u64,
+    path: &Path,
+    settings: &Settings,
+) -> io::Result<()> {
+    // The mutex covers the shared temporary file as well as the revision.
+    // A background write already in flight must not overwrite a newer save.
+    let mut written = written.lock().unwrap_or_else(|error| error.into_inner());
+    if revision > *written {
+        save(path, settings)?;
+        *written = revision;
+    }
+    Ok(())
+}
+
 /// Emitted once per change, after the in-memory settings are updated.
 #[derive(Clone, Debug)]
 pub struct SettingsChanged;
@@ -765,6 +791,8 @@ pub struct SettingsStore {
     /// The pending write. Replacing it cancels the previous one, so a window
     /// drag produces one write when it settles, not one per frame.
     save: Option<Task<()>>,
+    #[cfg(not(target_family = "wasm"))]
+    native_save: NativeSave,
     /// In the preview, the pop-outs and splits as the file had them. The
     /// preview's own, under no server, last for the run: every write puts
     /// these back in their place.
@@ -798,11 +826,23 @@ impl SettingsStore {
                 std::mem::take(&mut settings.splits),
             )
         });
-        let store = cx.new(|_| Self {
-            settings,
-            path,
-            save: None,
-            kept_places,
+        let store = cx.new(|cx| {
+            #[cfg(target_family = "wasm")]
+            let _ = cx;
+            #[cfg(not(target_family = "wasm"))]
+            cx.on_app_quit(|store: &mut Self, _| {
+                store.flush_on_quit();
+                std::future::ready(())
+            })
+            .detach();
+            Self {
+                settings,
+                path,
+                save: None,
+                #[cfg(not(target_family = "wasm"))]
+                native_save: NativeSave::default(),
+                kept_places,
+            }
         });
         cx.set_global(GlobalSettings(store.clone()));
         store
@@ -841,11 +881,7 @@ impl SettingsStore {
         let Some(path) = self.path.clone() else {
             return;
         };
-        let mut settings = self.settings.clone();
-        if let Some((popouts, splits)) = &self.kept_places {
-            settings.popouts = popouts.clone();
-            settings.splits = splits.clone();
-        }
+        let settings = self.disk_snapshot();
         #[cfg(target_family = "wasm")]
         {
             // localStorage lives on the page, not in a worker, and a page
@@ -864,17 +900,48 @@ impl SettingsStore {
         }
         #[cfg(not(target_family = "wasm"))]
         {
+            self.native_save.revision += 1;
+            let revision = self.native_save.revision;
+            let written = Arc::clone(&self.native_save.written);
             self.save = Some(cx.spawn(async move |_, cx| {
                 if !at_once {
                     cx.background_executor().timer(SAVE_DELAY).await;
                 }
-                let written = cx
-                    .background_spawn(async move { save(&path, &settings).map_err(|e| (path, e)) })
+                let result = cx
+                    .background_spawn(async move {
+                        write_revision(&written, revision, &path, &settings).map_err(|e| (path, e))
+                    })
                     .await;
-                if let Err((path, error)) = written {
+                if let Err((path, error)) = result {
                     tracing::warn!(path = %path.display(), %error, "could not save settings");
                 }
             }));
+        }
+    }
+
+    fn disk_snapshot(&self) -> Settings {
+        let mut settings = self.settings.clone();
+        if let Some((popouts, splits)) = &self.kept_places {
+            settings.popouts = popouts.clone();
+            settings.splits = splits.clone();
+        }
+        settings
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn flush_on_quit(&mut self) {
+        // Quit can precede the debounce timer. Cancel it and write the
+        // latest revision before GPUI shuts down its executors.
+        self.save = None;
+        if let Some(path) = &self.path
+            && let Err(error) = write_revision(
+                &self.native_save.written,
+                self.native_save.revision,
+                path,
+                &self.disk_snapshot(),
+            )
+        {
+            tracing::warn!(path = %path.display(), %error, "could not save settings on quit");
         }
     }
 }
@@ -1027,6 +1094,42 @@ mod tests {
         assert_eq!(splits[1].ratio, 0.5, "a split without a ratio halves");
         let old: Settings = serde_json::from_str(r#"{"zoom": 1.0}"#).unwrap();
         assert!(old.splits.is_empty());
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[gpui_kit::test]
+    fn quitting_before_the_save_timer_keeps_the_window_geometry(cx: &mut gpui_kit::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = cx.update(|cx| SettingsStore::init_for(Some(path.clone()), false, cx));
+        let geometry = WindowGeometry {
+            x: 143.,
+            y: 157.,
+            width: 1057.,
+            height: 713.,
+            maximized: false,
+        };
+        store.update(cx, |store, cx| {
+            store.update(cx, |settings| settings.window = Some(geometry))
+        });
+        assert_eq!(load(&path).0.window, None, "the save timer has not fired");
+        cx.update(|cx| cx.shutdown());
+        assert_eq!(load(&path).0.window, Some(geometry));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_stale_background_save_cannot_replace_the_final_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let written = Mutex::new(0);
+        let latest = Settings {
+            zoom: 1.25,
+            ..Default::default()
+        };
+        write_revision(&written, 2, &path, &latest).unwrap();
+        write_revision(&written, 1, &path, &Settings::default()).unwrap();
+        assert_eq!(load(&path).0.zoom, latest.zoom);
     }
 
     #[gpui_kit::test]

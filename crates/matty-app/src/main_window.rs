@@ -231,6 +231,8 @@ mod style_preview;
 mod taskbar;
 mod teams;
 mod triage;
+#[cfg(target_os = "windows")]
+mod window_geometry;
 
 pub struct MainWindow {
     settings: Entity<SettingsStore>,
@@ -4496,11 +4498,16 @@ impl MainWindow {
     }
 
     fn remember_bounds(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let maximized = window.is_maximized();
-        let bounds = window.window_bounds().get_bounds();
         if window.is_fullscreen() {
             return;
         }
+        let maximized = window.is_maximized();
+        #[cfg(target_os = "windows")]
+        let Some(bounds) = window_geometry::bounds_to_save(window, maximized) else {
+            return;
+        };
+        #[cfg(not(target_os = "windows"))]
+        let bounds = window.window_bounds().get_bounds();
         let geometry = WindowGeometry {
             x: f32::from(bounds.origin.x),
             y: f32::from(bounds.origin.y),
