@@ -683,9 +683,22 @@ fn window_options(cx: &App) -> WindowOptions {
             cx,
         )),
     };
+    // The Windows backend checks the saved bounds against the selected
+    // display, not the whole desktop. Without a display ID it checks the
+    // primary monitor and discards positions saved on other monitors.
+    #[cfg(target_os = "windows")]
+    let display_id = saved.and_then(|_| {
+        let center = bounds.get_bounds().center();
+        cx.displays()
+            .into_iter()
+            .find(|display| display.bounds().contains(&center))
+            .map(|display| display.id())
+    });
     WindowOptions {
         window_bounds: Some(bounds),
         window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
+        #[cfg(target_os = "windows")]
+        display_id,
         app_id: Some(APP_ID.into()),
         ..title_bar_window_options()
     }
